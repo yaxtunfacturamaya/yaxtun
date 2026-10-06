@@ -6,6 +6,7 @@ el Android restaures la PC a como estaba hace 10 horas, al instante o con tempor
 """
 import ctypes
 import datetime
+import re
 import hashlib
 import ipaddress
 import ssl
@@ -106,7 +107,7 @@ def create_point() -> str:
     return "Punto de restauración creado"
 
 
-def restore(hours=None, number=None) -> str:
+def restore(hours=None, number=None, keep=None) -> str:
     if number is not None:
         p = next((p for p in list_points() if p["numero"] == number), None)
         if not p:
@@ -119,10 +120,13 @@ def restore(hours=None, number=None) -> str:
         create_point()  # punto de seguridad para poder deshacer el retroceso
     except Exception:
         pass
+    kept = save_keep(keep)
     code, out = ps(f"Restore-Computer -RestorePoint {int(p['numero'])} -Confirm:$false")
     if code != 0:
+        KEEP_F.unlink(missing_ok=True)
         raise RuntimeError(out)
-    return f"Restaurando al punto del {p['fecha'].replace('T', ' ')}. La PC se reiniciará."
+    extra = f" Se volverán a aplicar {kept} ajustes que querías conservar." if kept else ""
+    return f"Restaurando al punto del {p['fecha'].replace('T', ' ')}. La PC se reiniciará.{extra}"
 
 
 def setup_system():
@@ -299,6 +303,67 @@ def live_state():
     return _live["datos"]
 
 
+SETTING_CATS = {"servicios", "tareas", "inicio_sistema", "inicio_usuario", "firewall", "sistema", "apariencia"}
+SVC = {"Auto": "Automatic", "Manual": "Manual", "Disabled": "Disabled"}
+RUN = r"\SOFTWARE\Microsoft\Windows\CurrentVersion\Run"
+PERS = r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize"
+INET = r"HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings"
+
+
+def q(x) -> str:
+    return "'" + str(x).replace("'", "''") + "'"
+
+
+def setting_cmd(cat, item, value):
+    """PowerShell que deja UN ajuste en `value` (None = que no exista). None si no se puede revertir por separado."""
+    if cat == "servicios" and value in SVC:
+        return f"Set-Service -Name {q(item)} -StartupType {SVC[value]}"
+    if cat == "tareas" and value in ("Activa", "Desactivada"):
+        path, _, name = item.rpartition("\\")
+        verb = "Enable" if value == "Activa" else "Disable"
+        return f"{verb}-ScheduledTask -TaskPath {q(path + chr(92))} -TaskName {q(name)} | Out-Null"
+    if cat in ("inicio_sistema", "inicio_usuario"):
+        hk = "HKLM:" if cat == "inicio_sistema" else "HKCU:"
+        keys = [hk + RUN] + ([hk + r"\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run"] if hk == "HKLM:" else [])
+        rm = "; ".join(f"Remove-ItemProperty -Path {q(k)} -Name {q(item)} -ErrorAction SilentlyContinue" for k in keys)
+        return rm if value is None else rm + f"; Set-ItemProperty -Path {q(keys[0])} -Name {q(item)} -Value {q(value)}"
+    if cat == "firewall" and value in ("Activado", "Desactivado"):
+        return f"Set-NetFirewallProfile -Name {q(item)} -Enabled {'True' if value == 'Activado' else 'False'}"
+    if value is None:
+        return None
+    if cat == "sistema":
+        if item == "Plan de energía":
+            m = re.search(r"[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}", value)
+            return f"powercfg /setactive {m.group(0)}" if m else None
+        if item == "Zona horaria":
+            return f"Set-TimeZone -Id {q(value)}"
+        if item == "PATH del sistema":
+            return f"[Environment]::SetEnvironmentVariable('Path', {q(value)}, 'Machine')"
+    if cat == "apariencia":
+        light = "1" if value == "Claro" else "0"
+        if item == "Tema de apps" and value in ("Claro", "Oscuro"):
+            return f"Set-ItemProperty -Path {q(PERS)} -Name AppsUseLightTheme -Value {light} -Type DWord"
+        if item == "Tema del sistema" and value in ("Claro", "Oscuro"):
+            return f"Set-ItemProperty -Path {q(PERS)} -Name SystemUsesLightTheme -Value {light} -Type DWord"
+        if item == "Fondo de pantalla":
+            return (f"Set-ItemProperty -Path 'HKCU:\\Control Panel\\Desktop' -Name WallPaper -Value {q(value)}; "
+                    "rundll32.exe user32.dll,UpdatePerUserSystemParameters 1, True")
+        if item == "Proxy":
+            if value == "Sin proxy":
+                return f"Set-ItemProperty -Path {q(INET)} -Name ProxyEnable -Value 0 -Type DWord"
+            return (f"Set-ItemProperty -Path {q(INET)} -Name ProxyServer -Value {q(value)}; "
+                    f"Set-ItemProperty -Path {q(INET)} -Name ProxyEnable -Value 1 -Type DWord")
+    return None
+
+
+def apply_value(cat, item, value) -> tuple[bool, str]:
+    cmd = setting_cmd(cat, item, value)
+    if cmd is None:
+        return False, "No se puede revertir por separado"
+    code, out = ps("$ErrorActionPreference='Stop'; " + cmd)
+    return code == 0, ("" if code == 0 else (out or "Error")[:200])
+
+
 def diff_states(then: dict, now: dict) -> list[dict]:
     out = []
     for cat, (label, rev) in CATS.items():
@@ -312,14 +377,22 @@ def diff_states(then: dict, now: dict) -> list[dict]:
                 tipo = "cambiar"
             else:
                 continue
-            out.append({"cat": cat, "label": label, "revierte": rev, "item": k, "tipo": tipo,
-                        "ahora": str(a.get(k, ""))[:140], "antes": str(b.get(k, ""))[:140]})
+            deseado = None if tipo == "quitar" else b[k]
+            ok = cat in SETTING_CATS and (tipo == "cambiar" or cat not in ("servicios", "tareas")) \
+                and setting_cmd(cat, k, deseado) is not None
+            out.append({"id": f"{cat}|{k}", "cat": cat, "label": label, "revierte": rev, "ajuste": cat in SETTING_CATS,
+                        "soportado": ok, "item": k, "tipo": tipo, "ahora": str(a.get(k, ""))[:140],
+                        "antes": str(b.get(k, ""))[:140], "_av": a.get(k), "_bv": b.get(k)})
     return out
 
 
-def compare(hours=None, number=None) -> dict:
+def pick_point(hours=None, number=None):
     pts = list_points()
-    p = next((x for x in pts if x["numero"] == number), None) if number is not None else target_point(hours)
+    return next((x for x in pts if x["numero"] == number), None) if number is not None else target_point(hours)
+
+
+def compare(hours=None, number=None) -> dict:
+    p = pick_point(hours, number)
     if not p:
         return {"sin_punto": True}
     sid = snapshot_for(p)
@@ -330,8 +403,102 @@ def compare(hours=None, number=None) -> dict:
         return {"punto": p, "snap": sid, "calculando": True}
     then = json.loads((SNAPS / f"{sid}.json").read_text())
     ch = diff_states(then, live)
-    return {"punto": p, "snap": sid, "cambios": ch[:300], "total": len(ch),
-            "revierten": sum(1 for c in ch if c["revierte"]), "actualizado": int(_live["t"])}
+    ch.sort(key=lambda c: (not c["ajuste"], list(CATS).index(c["cat"]), c["item"].lower()))
+    pub = [{k: v for k, v in c.items() if not k.startswith("_")} for c in ch[:400]]
+    return {"punto": p, "snap": sid, "cambios": pub, "total": len(ch),
+            "revierten": sum(1 for c in ch if c["revierte"]), "ajustes": sum(1 for c in ch if c["ajuste"] and c["revierte"]),
+            "actualizado": int(_live["t"])}
+
+
+# ---------- aplicar solo ajustes (sin apps, sin reiniciar), con progreso en vivo y deshacer ----------
+UNDO_F, KEEP_F, KEPT_F = CONF_DIR / "deshacer.json", CONF_DIR / "reaplicar.json", CONF_DIR / "reaplicado.json"
+_job: dict = {"items": [], "terminado": True, "titulo": ""}
+_job_lock = threading.Lock()
+
+
+def _run_job(titulo, todo):
+    """todo: lista de (id, texto, cat, item, valor_deseado, valor_previo). Ejecuta uno por uno publicando el avance."""
+    _job.update(items=[{"id": t[0], "texto": t[1], "estado": "pendiente", "msg": ""} for t in todo], terminado=False, titulo=titulo)
+    undo = []
+    for i, (_id, _txt, cat, item, deseado, previo) in enumerate(todo):
+        _job["items"][i]["estado"] = "aplicando"
+        ok, msg = apply_value(cat, item, deseado)
+        _job["items"][i].update(estado="ok" if ok else "error", msg=msg)
+        if ok:
+            undo.append({"cat": cat, "item": item, "valor": previo, "texto": _txt})
+    if titulo != "Deshaciendo":
+        UNDO_F.write_text(json.dumps(undo))
+    else:
+        UNDO_F.unlink(missing_ok=True)
+    _live["t"] = 0  # fuerza releer el estado en vivo
+    _job["terminado"] = True
+
+
+def start_job(titulo, todo):
+    with _job_lock:
+        if not _job["terminado"]:
+            raise RuntimeError("Ya hay una aplicación de ajustes en curso.")
+        _job["terminado"] = False
+    threading.Thread(target=_run_job, args=(titulo, todo), daemon=True).start()
+
+
+def apply_settings(hours, number, ids):
+    p = pick_point(hours, number)
+    sid = snapshot_for(p) if p else None
+    if sid is None:
+        raise RuntimeError("Ese punto no tiene foto del estado; no se pueden revertir ajustes por separado.")
+    then = json.loads((SNAPS / f"{sid}.json").read_text())
+    fresh = take_snapshot()
+    ch = [c for c in diff_states(then, fresh) if c["id"] in set(ids) and c["soportado"]]
+    if not ch:
+        raise RuntimeError("No hay ajustes seleccionados que revertir.")
+    todo = [(c["id"], f"{c['label']}: {c['item']}", c["cat"], c["item"],
+             None if c["tipo"] == "quitar" else c["_bv"], c["_av"]) for c in ch]
+    start_job("Aplicando ajustes", todo)
+    return len(todo)
+
+
+def undo_settings():
+    if not UNDO_F.exists():
+        raise RuntimeError("No hay nada que deshacer.")
+    items = json.loads(UNDO_F.read_text())
+    todo = [(f"{u['cat']}|{u['item']}", u["texto"], u["cat"], u["item"], u["valor"], None) for u in items]
+    start_job("Deshaciendo", todo)
+    return len(todo)
+
+
+def save_keep(ids):
+    """Guarda los ajustes (con su valor ACTUAL) que se volverán a aplicar solos después de restaurar y reiniciar."""
+    ids = set(ids or [])
+    if not ids:
+        KEEP_F.unlink(missing_ok=True)
+        return 0
+    fresh = take_snapshot()
+    keep = []
+    for i in ids:
+        cat, _, item = i.partition("|")
+        if cat not in SETTING_CATS:
+            continue
+        val = (fresh.get(cat) or {}).get(item)
+        if (val is None and cat not in ("inicio_sistema", "inicio_usuario")) or setting_cmd(cat, item, val) is None:
+            continue
+        keep.append({"cat": cat, "item": item, "valor": val, "texto": f"{CATS[cat][0]}: {item}"})
+    KEEP_F.write_text(json.dumps(keep))
+    return len(keep)
+
+
+def apply_pending():
+    """Tras el reinicio: vuelve a aplicar los ajustes que el usuario pidió conservar."""
+    if not KEEP_F.exists():
+        return
+    time.sleep(20)  # que Windows termine de arrancar
+    keep = json.loads(KEEP_F.read_text())
+    res = []
+    for k in keep:
+        ok, msg = apply_value(k["cat"], k["item"], k["valor"])
+        res.append({"texto": k["texto"], "ok": ok, "msg": msg})
+    KEPT_F.write_text(json.dumps({"t": int(time.time()), "items": res}))
+    KEEP_F.unlink(missing_ok=True)
 
 
 # ---------- hilos internos (sin tareas externas) ----------
@@ -348,23 +515,23 @@ def hourly_points():
         time.sleep(600)
 
 
-def _timer_run(sec, hours, number):
+def _timer_run(sec, hours, number, keep=None):
     time.sleep(sec)
     with _lock:
         if _timer["t"] is not threading.current_thread():
             return
         _timer["at"] = _timer["t"] = None
     try:
-        print(restore(hours, number))
+        print(restore(hours, number, keep))
     except Exception as e:
         print("restauración por temporizador falló:", e)
 
 
-def set_timer(minutes, hours=None, number=None):
+def set_timer(minutes, hours=None, number=None, keep=None):
     with _lock:
         _timer["at"] = _timer["t"] = None
         if minutes:
-            t = threading.Thread(target=_timer_run, args=(minutes * 60, hours, number), daemon=True)
+            t = threading.Thread(target=_timer_run, args=(minutes * 60, hours, number, keep), daemon=True)
             _timer["t"], _timer["at"] = t, int(time.time() + minutes * 60)
             t.start()
     return _timer["at"]
@@ -550,6 +717,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_body(200, json.dumps(compare(float(q.get("horas", [HOURS])[0]), num)))
             except Exception as e:
                 return self.send_body(500, json.dumps({"error": str(e)}))
+        if path == "/api/ajustes/estado":
+            kept = json.loads(KEPT_F.read_text()) if KEPT_F.exists() else None
+            return self.send_body(200, json.dumps({"job": _job, "deshacer": UNDO_F.exists(), "reaplicado": kept}))
         if path == "/api/estado":
             try:
                 q = parse_qs(self.path.partition("?")[2])
@@ -565,7 +735,7 @@ class Handler(BaseHTTPRequestHandler):
         if not self.guard():
             return
         n = int(self.headers.get("Content-Length") or 0)
-        raw = self.rfile.read(min(n, 4096)).decode()
+        raw = self.rfile.read(min(n, 1 << 20)).decode()
         if self.path == "/login":
             ip = self.client_address[0]
             now = time.time()
@@ -585,14 +755,22 @@ class Handler(BaseHTTPRequestHandler):
         try:
             body = json.loads(raw or "{}")
             if self.path == "/api/ejecutar":
-                msg = restore(float(body.get("horas", HOURS)), body.get("numero"))
+                msg = restore(float(body.get("horas", HOURS)), body.get("numero"), body.get("conservar"))
+            elif self.path == "/api/ajustes/aplicar":
+                n = apply_settings(float(body.get("horas", HOURS)), body.get("numero"), body.get("ids") or [])
+                msg = f"Aplicando {n} ajustes…"
+            elif self.path == "/api/ajustes/deshacer":
+                msg = f"Deshaciendo {undo_settings()} ajustes…"
+            elif self.path == "/api/ajustes/descartar":
+                KEPT_F.unlink(missing_ok=True)
+                msg = "ok"
             elif self.path == "/api/crear":
                 msg = create_point()
             elif self.path == "/api/temporizador":
                 m = float(body.get("minutos", 0))
                 if m and not 1 <= m <= 1440:
                     return self.send_body(400, json.dumps({"error": "minutos entre 1 y 1440"}))
-                return self.send_body(200, json.dumps({"ok": True, "temporizador": set_timer(m, float(body.get("horas", HOURS)), body.get("numero"))}))
+                return self.send_body(200, json.dumps({"ok": True, "temporizador": set_timer(m, float(body.get("horas", HOURS)), body.get("numero"), body.get("conservar"))}))
             else:
                 return self.send_body(404, "{}")
             self.send_body(200, json.dumps({"ok": True, "msg": msg}))
@@ -621,15 +799,23 @@ small{color:#94a3b8}input{padding:12px;border-radius:8px;border:0;width:90px;fon
 .split img{width:100%;border-radius:6px;background:#000;min-height:40px;display:block}.split small{display:block;margin-bottom:2px}
 .chg{border-top:1px solid #334155;padding:7px 0;font-size:13px}.cols{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:3px}
 .cols div{background:#0f172a;border-radius:6px;padding:4px 6px;word-break:break-word}.tag{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}
+.seg{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin:8px 0}.seg button{margin:0;padding:10px;font-size:14px;background:#1e293b;border:2px solid #334155}
+.seg button.on{border-color:#38bdf8;background:#0c4a6e}#modoTxt{font-size:13px;color:#94a3b8;margin-bottom:6px}.chg label{display:block;margin-top:4px;font-size:13px;color:#7dd3fc}
+.chg input{width:auto;transform:scale(1.3);margin-right:8px}#job div{padding:3px 0;font-size:14px}button.go{background:#16a34a;font-weight:700}
 .rv{background:#14532d}.nrv{background:#713f12}.cat{margin-top:10px;color:#38bdf8;font-weight:600}</style></head><body>
 <div id=ov hidden style="position:fixed;inset:0;background:#0f172af2;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px"><h1 id=ovt></h1><p id=ovs></p></div>
 <h1>⏪ Retroceder PC</h1>
 <div class=card><b>¿Cuánto retroceder?</b><br><input id=horas type=number value=10 min=0.5 step=0.5> horas atrás
 <div id=estado style="margin-top:8px">Cargando…</div></div>
 <div class=card><b>Comparativa en tiempo real</b> <small id=cmpinfo></small>
+<div class=seg><button id=mTodo class=on>Todo (Windows)</button><button id=mAj>Solo ajustes</button></div><div id=modoTxt></div>
 <div class=split><div><small>AHORA (en vivo)</small><img id=imgA alt=""></div><div><small id=lblB>Antes</small><img id=imgB alt=""></div></div>
 <div id=resumen style="margin-top:8px"></div><div id=cambios></div></div>
+<div id=reap class=card hidden></div>
+<div id=jobcard class=card hidden><b id=jobt></b><div id=job></div></div>
 <button class=big id=ahora>Restaurar ahora</button>
+<button class=go id=aplicar hidden>Aplicar ajustes</button>
+<button id=deshacer hidden>↩ Deshacer los últimos ajustes aplicados</button>
 <div class=card><b>Temporizador</b><br><small>Restaura solo (con las horas de arriba) dentro de:</small><br>
 <input id=min type=number value=60 min=1> minutos<button class=ok id=prog>Iniciar temporizador</button>
 <button id=canc hidden>Cancelar temporizador</button><div id=cuenta></div></div>
@@ -645,22 +831,45 @@ async function cargar(){const d=await api("/api/estado?horas="+hrs());if(d.error
  $("estado").innerHTML=t?`Se restaurará al punto del <b>${t.fecha.replace("T"," ")}</b>`:`⚠ No hay un punto de hace ${hrs()} h todavía. El programa crea uno cada hora.`;
  $("lista").innerHTML=d.puntos.slice().reverse().map(p=>`<div class=pt><span>${p.fecha.replace("T"," ")}</span><span><button class=vb data-v=${p.numero}>Ver</button><button data-n=${p.numero}>Ir aquí</button></span></div>`).join("")||"Ninguno todavía";
  tmp=d.temporizador;pintar()}
-let sel=null,snapShown=null;
+let sel=null,snapShown=null,mode="todo",D=null;const CH={todo:{},aj:{}};
 const esc=t=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
 const TIPO={quitar:"Se quitará",volver:"Se volverá a poner",cambiar:"Cambiará"};
+const checked=c=>c.id in CH[mode]?CH[mode][c.id]:true;
+const marcables=()=>D&&D.cambios?D.cambios.filter(c=>c.ajuste&&c.soportado&&c.revierte):[];
+const marcados=()=>marcables().filter(checked).map(c=>c.id);
+function modoUI(){$("mTodo").className=mode=="todo"?"on":"";$("mAj").className=mode=="aj"?"on":"";
+ $("modoTxt").textContent=mode=="todo"?"Restaura Windows completo (programas, controladores y ajustes del sistema) y reinicia. Marca «Conservar» en los ajustes que NO quieres perder: se vuelven a aplicar solos al volver.":"Solo revierte los ajustes que marques, sin tocar programas ni reiniciar. Cada cambio se ve en vivo y se puede deshacer.";
+ $("ahora").hidden=mode!="todo";$("aplicar").hidden=mode!="aj";botones()}
+function botones(){const n=marcados().length;$("aplicar").textContent=`Aplicar ${n} ajuste${n==1?"":"s"} ahora (sin reiniciar)`;$("aplicar").disabled=!n;
+ $("ahora").textContent=mode=="todo"?(n?`Restaurar y reiniciar (conserva ${n} ajuste${n==1?"":"s"})`:"Restaurar y reiniciar"):"Restaurar ahora"}
+function render(){const R=$("resumen"),C=$("cambios");if(!D||!D.cambios){return}
+ const L=D.cambios.filter(c=>mode=="todo"||c.ajuste);const oc=D.cambios.length-L.length;
+ R.innerHTML=D.total?(mode=="todo"?`<b>${D.total}</b> diferencias · <b>${D.ajustes}</b> son ajustes que perderías (puedes conservarlos) · el resto son programas, controladores y similares`
+  :`<b>${L.filter(c=>c.revierte).length}</b> ajustes distintos a ese punto${oc?` · ${oc} de programas/controladores no se tocan en este modo`:""}`):"✅ Sin diferencias: la PC está igual que en ese punto.";
+ let h="",last="";for(const c of L){if(c.label!==last){last=c.label;h+=`<div class=cat>${esc(c.label)}${c.ajuste?"":" (programas/sistema)"}</div>`}
+  const op=c.ajuste&&c.soportado&&c.revierte;
+  h+=`<div class=chg><b>${esc(c.item)}</b><span class="tag ${c.revierte?"rv":"nrv"}">${c.revierte?"Se revierte":"No se revierte"}</span> <small>${TIPO[c.tipo]}</small>
+  <div class=cols><div><small>Ahora</small><br>${c.tipo=="volver"?"—":esc(c.ahora)||"—"}</div><div><small>Quedaría</small><br>${c.tipo=="quitar"?"— (no existe)":esc(c.antes)||"—"}</div></div>
+  ${op?`<label><input type=checkbox data-id="${esc(c.id)}" ${checked(c)?"checked":""}>${mode=="todo"?"Conservar el valor de ahora":"Revertir este ajuste"}</label>`:(c.ajuste&&c.revierte?"<small>Este ajuste solo se revierte con el modo Todo.</small>":"")}</div>`}
+ C.innerHTML=h;botones()}
 async function comparar(){const d=await api("/api/comparar?"+(sel?"numero="+sel:"horas="+hrs()));
  const R=$("resumen"),C=$("cambios");
  if(d.error){R.textContent=d.error;return}
- if(d.sin_punto){R.textContent="Aún no hay un punto para comparar.";C.innerHTML="";$("imgB").removeAttribute("src");return}
+ if(d.sin_punto){D=null;R.textContent="Aún no hay un punto para comparar.";C.innerHTML="";$("imgB").removeAttribute("src");botones();return}
  $("lblB").textContent="Antes: "+d.punto.fecha.replace("T"," ");
- if(d.sin_datos){R.textContent="Ese punto no tiene foto del estado (lo creó Windows u otro programa). Se puede restaurar igual, pero no hay comparativa.";C.innerHTML="";$("imgB").removeAttribute("src");return}
+ if(d.sin_datos){D=null;R.textContent="Ese punto no tiene foto del estado (lo creó Windows u otro programa). Se puede restaurar igual, pero no hay comparativa ni modo «Solo ajustes».";C.innerHTML="";$("imgB").removeAttribute("src");botones();return}
  if(snapShown!==d.snap){snapShown=d.snap;$("imgB").src="/api/captura/"+d.snap+".png"}
  if(d.calculando){R.textContent="Leyendo el estado actual de la PC…";return}
- R.innerHTML=d.total?`<b>${d.total}</b> diferencias · <b>${d.revierten}</b> se revertirían al restaurar · ${d.total-d.revierten} no se revierten (solo informativas)`:"✅ Sin diferencias: la PC está igual que en ese punto.";
- let h="",last="";for(const c of d.cambios){if(c.label!==last){last=c.label;h+=`<div class=cat>${esc(c.label)}</div>`}
-  h+=`<div class=chg><b>${esc(c.item)}</b><span class="tag ${c.revierte?"rv":"nrv"}">${c.revierte?"Se revierte":"No se revierte"}</span> <small>${TIPO[c.tipo]}</small>
-  <div class=cols><div><small>Ahora</small><br>${c.tipo=="volver"?"—":esc(c.ahora)||"—"}</div><div><small>Quedaría</small><br>${c.tipo=="quitar"?"— (no existe)":esc(c.antes)||"—"}</div></div></div>`}
- C.innerHTML=h;$("cmpinfo").textContent="· actualizado "+new Date(d.actualizado*1000).toLocaleTimeString()}
+ if(jobRun)return;D=d;$("cmpinfo").textContent="· actualizado "+new Date(d.actualizado*1000).toLocaleTimeString();render()}
+let jobRun=false,jt=null;
+function pintarJob(j){$("jobcard").hidden=false;$("jobt").textContent=(j.terminado?"✔ ":"⏳ ")+j.titulo+(j.terminado?" — terminado":"…");
+ $("job").innerHTML=j.items.map(i=>`<div>${{pendiente:"⚪",aplicando:"⏳",ok:"✅",error:"❌"}[i.estado]} ${esc(i.texto)}${i.msg?` <small style=color:#f87171>${esc(i.msg)}</small>`:""}</div>`).join("")}
+function seguirJob(){jobRun=true;clearInterval(jt);jt=setInterval(async()=>{const d=await api("/api/ajustes/estado");if(!d.job)return;pintarJob(d.job);
+ if(d.job.terminado){clearInterval(jt);jobRun=false;$("deshacer").hidden=!d.deshacer;setTimeout(comparar,1500)}},700)}
+async function estadoAj(){const d=await api("/api/ajustes/estado");if(!d.job)return;$("deshacer").hidden=!d.deshacer||jobRun;
+ if(!jobRun&&!d.job.terminado){seguirJob()}
+ const r=d.reaplicado;if(r){$("reap").hidden=false;$("reap").innerHTML=`<b>♻ Tras el reinicio se volvieron a aplicar ${r.items.length} ajustes que querías conservar</b>`+r.items.map(i=>`<div style="font-size:13px">${i.ok?"✅":"❌"} ${esc(i.texto)}${i.ok?"":" <small>"+esc(i.msg)+"</small>"}</div>`).join("")+`<button id=okreap>Entendido</button>`;
+  $("okreap").onclick=async()=>{await api("/api/ajustes/descartar","POST",{});$("reap").hidden=true}}else $("reap").hidden=true}
 function pintar(){$("canc").hidden=!tmp;if(!tmp){$("cuenta").textContent="";return}
  const s=Math.max(0,tmp-Math.floor(Date.now()/1000));$("cuenta").textContent=`Restaura en ${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`}
 async function ejecutar(b){const r=await api("/api/ejecutar","POST",b);
@@ -672,13 +881,18 @@ function reiniciando(msg){const o=$("ov");o.hidden=false;$("ovt").textContent="�
   $("ovs").textContent="Restauración completada.";setTimeout(()=>{o.hidden=true;cargar()},2500)}}catch{caido=true;$("ovt").textContent="🔄 PC reiniciando…";$("ovs").textContent="Restaurando y reiniciando. Esta pantalla avisa cuando vuelva."}},3000)}
 setInterval(pintar,1000);setInterval(cargar,5000);$("horas").oninput=()=>{sel=null;clearTimeout(hz);hz=setTimeout(()=>{cargar();comparar()},400)};
 setInterval(()=>{if(!document.hidden)$("imgA").src="/api/captura/ahora.png?t="+Date.now()},2000);setInterval(()=>{if(!document.hidden)comparar()},8000);
-$("ahora").onclick=()=>ejecutar(sel?{numero:sel}:{horas:hrs()});
+$("ahora").onclick=()=>ejecutar({...(sel?{numero:sel}:{horas:hrs()}),conservar:marcados()});
+$("mTodo").onclick=()=>{mode="todo";modoUI();render()};$("mAj").onclick=()=>{mode="aj";modoUI();render()};
+$("cambios").onchange=e=>{const i=e.target.dataset.id;if(i!==undefined){CH[mode][i]=e.target.checked;botones()}};
+$("aplicar").onclick=async()=>{const r=await api("/api/ajustes/aplicar","POST",{...(sel?{numero:sel}:{horas:hrs()}),ids:marcados()});
+ if(r.error){$("msg").textContent=r.error;return}$("msg").textContent="";seguirJob()};
+$("deshacer").onclick=async()=>{const r=await api("/api/ajustes/deshacer","POST",{});if(r.error){$("msg").textContent=r.error;return}seguirJob()};
 $("lista").onclick=e=>{const n=e.target.dataset.n,v=e.target.dataset.v;if(n)ejecutar({numero:+n});if(v){sel=+v;$("msg").textContent="";comparar()}};
-$("prog").onclick=async()=>{const r=await api("/api/temporizador","POST",{minutos:+$("min").value,horas:hrs()});tmp=r.temporizador;pintar()};
+$("prog").onclick=async()=>{const r=await api("/api/temporizador","POST",{minutos:+$("min").value,...(sel?{numero:sel}:{horas:hrs()}),conservar:marcados()});tmp=r.temporizador;pintar()};
 $("canc").onclick=async()=>{await api("/api/temporizador","POST",{minutos:0});tmp=null;pintar()};
 $("crear").onclick=async()=>{const r=await api("/api/crear","POST");$("msg").textContent=r.msg||r.error||"";cargar()};
 if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});
-cargar();comparar();</script></body></html>"""
+modoUI();cargar();comparar();estadoAj();setInterval(estadoAj,5000);</script></body></html>"""
 
 INFO = """<!doctype html><html lang=es><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Retroceder PC - instalar</title><body style="font:16px system-ui;background:#0f172a;color:#e2e8f0;padding:20px;max-width:460px;margin:auto">
@@ -726,6 +940,7 @@ def main():
     if FAKE and not snapshot_ids():  # solo pruebas: foto del estado "de hace 11 h"
         save_snapshot(point_epoch(_fake_points[0]) + 30)
     threading.Thread(target=hourly_points, daemon=True).start()
+    threading.Thread(target=apply_pending, daemon=True).start()
     try:
         srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
         info = ThreadingHTTPServer(("0.0.0.0", PORT + 1), InfoHandler)

@@ -29,3 +29,9 @@ servicios, tareas, inicio con Windows, firewall y ajustes) y una **captura de pa
 derecha = cómo estaba en ese punto, y debajo la lista de diferencias (se quitará / se volverá a poner / cambiará). Cada diferencia dice si
 Restaurar sistema **la revierte** o no: devuelve el sistema, programas, controladores y servicios; **no** revierte la configuración de tu usuario
 (tema, fondo, proxy…) ni tus archivos, y esos se muestran solo como informativos. Los puntos que creó Windows (no este programa) no tienen foto.
+
+## No perder ajustes: «Conservar» y modo «Solo ajustes»
+- **Modo Todo (Windows):** la lista marca los ajustes que perderías. Los que marques con «Conservar» se guardan con su valor actual, Windows restaura y reinicia, y al volver el programa los **reaplica solo** (aparece un aviso con el resultado de cada uno).
+- **Modo Solo ajustes:** revierte únicamente los ajustes que marques (servicios, tareas, inicio con Windows, firewall, plan de energía, zona horaria, PATH, tema, fondo, proxy), **sin reiniciar ni tocar programas, controladores o actualizaciones**. Se aplican uno por uno con progreso en vivo (✅/❌) y hay botón **Deshacer**.
+- No se pueden revertir por separado: instalar/quitar programas, controladores, actualizaciones, nombre del equipo, navegador predeterminado y resolución; esos solo cambian con el modo Todo.
+- Los ajustes se leen de la foto del estado que se guarda cada hora, así que solo se comparan puntos creados por este programa.
