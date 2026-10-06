@@ -783,10 +783,14 @@ MANIFEST = json.dumps({"name": "Retroceder PC", "short_name": "Retroceder", "sta
                        "icons": [{"src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
                                  {"src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"}]})
 LOGIN = """<!doctype html><html lang=es><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Retroceder PC</title><body style="font:16px system-ui;background:#0f172a;color:#e2e8f0;padding:24px;max-width:420px;margin:auto">
+<title>Retroceder PC</title><link rel=manifest href=/manifest.json><meta name=theme-color content="#0f172a"><body style="font:16px system-ui;background:#0f172a;color:#e2e8f0;padding:24px;max-width:420px;margin:auto">
 <h2>⏪ Retroceder PC</h2><form method=post action=/login><input name=password type=password placeholder=Contraseña autofocus
 style="width:100%;padding:14px;border-radius:8px;border:0;font-size:16px;box-sizing:border-box"><p style=color:#f87171>%ERR%</p>
-<button style="width:100%;padding:14px;border:0;border-radius:10px;background:#0284c7;color:#fff;font-size:17px">Entrar</button></form></body></html>"""
+<button style="width:100%;padding:14px;border:0;border-radius:10px;background:#0284c7;color:#fff;font-size:17px">Entrar</button></form><button id=inst hidden style="width:100%;padding:16px;margin:8px 0;border:0;border-radius:12px;font-size:17px;background:#16a34a;color:#fff;font-weight:700">⬇ Instalar app en este teléfono</button>
+<script>let ip=null;const ib=document.getElementById("inst");
+addEventListener("beforeinstallprompt",e=>{e.preventDefault();ip=e;ib.hidden=false});
+ib.onclick=async()=>{ip.prompt();await ip.userChoice;ib.hidden=true};addEventListener("appinstalled",()=>ib.hidden=true);
+if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});</script></body></html>"""
 PAGE = """<!doctype html><html lang=es><head><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Retroceder PC</title><link rel=manifest href=/manifest.json><meta name=theme-color content="#0f172a">
 <style>body{margin:0;font:16px system-ui;background:#0f172a;color:#e2e8f0;padding:16px;max-width:480px;margin:auto}
@@ -805,6 +809,11 @@ small{color:#94a3b8}input{padding:12px;border-radius:8px;border:0;width:90px;fon
 .rv{background:#14532d}.nrv{background:#713f12}.cat{margin-top:10px;color:#38bdf8;font-weight:600}</style></head><body>
 <div id=ov hidden style="position:fixed;inset:0;background:#0f172af2;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px"><h1 id=ovt></h1><p id=ovs></p></div>
 <h1>⏪ Retroceder PC</h1>
+<button id=inst hidden style="width:100%;padding:16px;margin:8px 0;border:0;border-radius:12px;font-size:17px;background:#16a34a;color:#fff;font-weight:700">⬇ Instalar app en este teléfono</button>
+<script>let ip=null;const ib=document.getElementById("inst");
+addEventListener("beforeinstallprompt",e=>{e.preventDefault();ip=e;ib.hidden=false});
+ib.onclick=async()=>{ip.prompt();await ip.userChoice;ib.hidden=true};addEventListener("appinstalled",()=>ib.hidden=true);
+</script>
 <div class=card><b>¿Cuánto retroceder?</b><br><input id=horas type=number value=10 min=0.5 step=0.5> horas atrás
 <div id=estado style="margin-top:8px">Cargando…</div></div>
 <div class=card><b>Comparativa en tiempo real</b> <small id=cmpinfo></small>

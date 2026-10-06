@@ -15,7 +15,7 @@ En el panel eliges **cuántas horas atrás**, o tocas «Ir aquí» en un punto e
    Ajustes → Seguridad → Más seguridad → Cifrado y credenciales → Instalar un certificado → Certificado de CA.
 3. Abre `https://<ip-de-la-pc>:8780`, escribe la contraseña y en Chrome ⋮ → **Instalar app**. Queda como app en tu pantalla de inicio.
 
-El .exe: GitHub → Actions → «Build Retroceder PC» → `RetrocederPC-windows`. Con Python: `pip install -r retroceder_pc/requirements.txt` y `python retroceder_pc/retroceder_pc.py`.
+**Descarga directa del .exe (PC):** https://github.com/yaxtunfacturamaya/yaxtun/releases/download/descarga/RetrocederPC.exe (se actualiza solo con cada cambio). Con Python: `pip install -r retroceder_pc/requirements.txt` y `python retroceder_pc/retroceder_pc.py`.
 Quitar inicio automático/firewall: `RetrocederPC.exe --desinstalar`. Variables: `RETRO_HORAS` (10), `RETRO_PUERTO` (8780).
 
 ## Seguridad

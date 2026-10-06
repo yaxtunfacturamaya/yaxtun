@@ -4,6 +4,8 @@ on:
   push:
     branches: [ccr-b9155ef9-d4adj9]
     paths: [retroceder_pc/**, .github/workflows/build-retroceder.yml]
+permissions:
+  contents: write
 jobs:
   build:
     runs-on: windows-latest
@@ -17,3 +19,10 @@ jobs:
         with:
           name: RetrocederPC-windows
           path: dist/RetrocederPC.exe
+      - name: Publicar descarga directa (release "descarga")
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release view descarga >/dev/null 2>&1 || gh release create descarga --title "Retroceder PC (última versión)" --notes "Descarga RetrocederPC.exe y ábrelo en la PC." --target "$GITHUB_SHA"
+          gh release upload descarga dist/RetrocederPC.exe --clobber
