@@ -3,7 +3,12 @@
 Ve y controla tu escritorio (mouse, clics, teclado, scroll) desde cualquier navegador
 dentro de tu tailnet, solo por HTTPS.
 
-## En la PC que quieres controlar
+## Ejecutable (sin Python)
+En GitHub → Actions → "Build ejecutables" descarga `escritorio-remoto-windows-latest` (.exe).
+Ábrelo en tu PC: genera y muestra una contraseña (se guarda en `~/.yaxtun-remote.json`) y
+publica solo la URL HTTPS con `tailscale serve`. Solo necesitas Tailscale instalado.
+
+## Con Python (alternativa)
 ```
 pip install -r requirements.txt
 # Windows (PowerShell):  $env:RD_PASSWORD="una-clave-larga"

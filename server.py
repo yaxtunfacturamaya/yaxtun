@@ -24,14 +24,16 @@ pyautogui.PAUSE = 0
 
 HOST = os.environ.get("RD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RD_PORT", "8765"))
-PASSWORD = os.environ.get("RD_PASSWORD", "")
+PASSWORD = os.environ.get("RD_PASSWORD", "")  # si falta, main() la genera y la guarda
 # Opcional: solo esta cuenta de Tailscale (ej. tu@hotmail.com). `tailscale serve` inyecta el header.
 ALLOWED_LOGIN = os.environ.get("RD_ALLOWED_LOGIN", "").lower()
 FPS = int(os.environ.get("RD_FPS", "12"))
 QUALITY = int(os.environ.get("RD_QUALITY", "60"))
 MAX_WIDTH = int(os.environ.get("RD_MAX_WIDTH", "1600"))
 SECRET = secrets.token_bytes(32)
-STATIC = Path(__file__).parent / "static"
+BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))  # _MEIPASS: ejecutable PyInstaller
+STATIC = BASE / "static"
+CONFIG = Path.home() / ".yaxtun-remote.json"
 
 
 def make_token() -> str:
@@ -165,15 +167,49 @@ async def ws_handler(request: web.Request):
     return ws
 
 
+def load_password() -> str:
+    """Contraseña de RD_PASSWORD, o la guardada, o una nueva aleatoria."""
+    if PASSWORD:
+        return PASSWORD
+    try:
+        return json.loads(CONFIG.read_text())["password"]
+    except (OSError, KeyError, ValueError):
+        pw = secrets.token_urlsafe(12)
+        CONFIG.write_text(json.dumps({"password": pw}))
+        try:
+            CONFIG.chmod(0o600)
+        except OSError:
+            pass
+        return pw
+
+
+def publish() -> None:
+    """Publica con HTTPS en el tailnet vía `tailscale serve` y muestra la URL."""
+    import shutil
+    import subprocess
+    ts = shutil.which("tailscale") or next(
+        (p for p in (r"C:\Program Files\Tailscale\tailscale.exe",
+                     "/Applications/Tailscale.app/Contents/MacOS/Tailscale") if os.path.exists(p)), None)
+    if not ts:
+        print("No encontré Tailscale; instálalo y ejecuta: tailscale serve --bg https / http://127.0.0.1:%d" % PORT)
+        return
+    r = subprocess.run([ts, "serve", "--bg", "--https=443", f"http://127.0.0.1:{PORT}"],
+                       capture_output=True, text=True)
+    print((r.stdout + r.stderr).strip())
+
+
 def main():
+    global PASSWORD
+    PASSWORD = load_password()
     if len(PASSWORD) < 8:
-        sys.exit("Define RD_PASSWORD (mínimo 8 caracteres).")
+        sys.exit("RD_PASSWORD debe tener mínimo 8 caracteres.")
+    print(f"\n*** Contraseña de acceso: {PASSWORD} ***\n")
+    publish()
     app = web.Application(middlewares=[guard])
     app.add_routes([
         web.get("/", index), web.get("/ws", ws_handler),
         web.route("*", "/login", login),
     ])
-    print(f"Escuchando en http://{HOST}:{PORT} -> expón con: tailscale serve --bg https / http://127.0.0.1:{PORT}")
     web.run_app(app, host=HOST, port=PORT, print=None)
 
 
