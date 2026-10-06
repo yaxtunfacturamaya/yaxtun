@@ -908,7 +908,7 @@ INFO = """<!doctype html><html lang=es><meta charset=utf-8><meta name=viewport c
 <h2>⏪ Retroceder PC</h2><p><b>Paso 1 (una sola vez):</b> descarga el certificado para que tu Android confíe en esta PC.</p>
 <p><a href=/ca.crt style="display:block;padding:14px;background:#0284c7;color:#fff;border-radius:10px;text-align:center;text-decoration:none">Descargar certificado</a></p>
 <p>Luego: Ajustes → Seguridad (o «Seguridad y privacidad») → Más seguridad → Cifrado y credenciales → <i>Instalar un certificado</i> → <i>Certificado de CA</i> → elige el archivo descargado.</p>
-<p><b>Paso 2:</b> abre la app segura:</p>
+<p><b>Paso 2:</b> abre la app segura (este botón te lleva; no tienes que recordar otra dirección):</p>
 <p><a href="%URL%" style="display:block;padding:14px;background:#16a34a;color:#fff;border-radius:10px;text-align:center;text-decoration:none">%URL%</a></p>
 <p>Escribe la contraseña y en Chrome toca ⋮ → <b>Instalar app</b>. Queda como una app en tu pantalla de inicio.</p></body></html>"""
 
@@ -964,8 +964,8 @@ def main():
     InfoHandler.url = f"https://{ip}:{PORT}"
     threading.Thread(target=info.serve_forever, daemon=True).start()
     print("=== Retroceder PC ===")
-    print(f"1) Primera vez, en el Android (mismo WiFi): abre  http://{ip}:{PORT + 1}  e instala el certificado.")
-    print(f"2) Después abre  https://{ip}:{PORT}  e instálala como app (Chrome ⋮ → Instalar app).")
+    print(f"En el Android (mismo WiFi) abre SOLO este link:  http://{ip}:{PORT + 1}")
+    print("Ahí te guía: 1) descargar e instalar el certificado (una vez)  2) botón verde para abrir e instalar la app.")
     print(f"Contraseña: {conf['password']}   (guardada en {CONF})")
     print("Crea un punto de restauración cada hora. Deja esta ventana abierta (o inicia sola con Windows).")
     try:
