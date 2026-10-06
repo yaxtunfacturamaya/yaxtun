@@ -1,0 +1,19 @@
+name: Build Retroceder PC
+on:
+  workflow_dispatch:
+  push:
+    branches: [ccr-b9155ef9-d4adj9]
+    paths: [retroceder_pc/**, .github/workflows/build-retroceder.yml]
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - run: pip install pyinstaller
+      - run: pyinstaller --onefile --uac-admin --name RetrocederPC retroceder_pc/retroceder_pc.py
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RetrocederPC-windows
+          path: dist/RetrocederPC.exe
