@@ -6,7 +6,7 @@ Un solo `.exe` para Windows. Sin Tailscale ni cuentas: genera su propia autorida
 Usa **Restaurar sistema** de Windows. El programa crea un *punto de restauración* cada hora (guarda ajustes, controladores,
 registro y programas instalados). Al pedir «retroceder 10 h» busca el punto más reciente de hace 10 h o más, crea antes un
 punto de seguridad (para poder deshacer) y le dice a Windows que restaure; la PC se reinicia y todo lo cambiado después vuelve a como estaba.
-No toca documentos ni archivos personales. Solo puede volver a puntos que ya existan (hay que esperar las horas la primera vez).
+No toca documentos ni archivos personales. El botón restaura y reinicia al instante, sin pedir confirmación; la pantalla muestra «PC reiniciando…» y avisa cuando vuelve (requiere que Windows inicie sesión solo para que el programa arranque otra vez). Solo puede volver a puntos que ya existan (hay que esperar las horas la primera vez).
 En el panel eliges **cuántas horas atrás**, o tocas «Ir aquí» en un punto exacto, y puedes programar un **temporizador**.
 
 ## Instalar (una sola vez)

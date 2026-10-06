@@ -406,6 +406,7 @@ button.big{background:#dc2626;font-weight:700}button.ok{background:#0284c7}.card
 small{color:#94a3b8}input{padding:12px;border-radius:8px;border:0;width:90px;font-size:16px}#msg{white-space:pre-wrap;color:#fbbf24}
 .pt{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid #334155;font-size:14px}
 .pt button{width:auto;padding:8px 12px;margin:0;font-size:14px;background:#7f1d1d}#lista{max-height:240px;overflow:auto}</style></head><body>
+<div id=ov hidden style="position:fixed;inset:0;background:#0f172af2;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px"><h1 id=ovt></h1><p id=ovs></p></div>
 <h1>⏪ Retroceder PC</h1>
 <div class=card><b>¿Cuánto retroceder?</b><br><input id=horas type=number value=10 min=0.5 step=0.5> horas atrás
 <div id=estado style="margin-top:8px">Cargando…</div></div>
@@ -413,7 +414,7 @@ small{color:#94a3b8}input{padding:12px;border-radius:8px;border:0;width:90px;fon
 <div class=card><b>Temporizador</b><br><small>Restaura solo (con las horas de arriba) dentro de:</small><br>
 <input id=min type=number value=60 min=1> minutos<button class=ok id=prog>Iniciar temporizador</button>
 <button id=canc hidden>Cancelar temporizador</button><div id=cuenta></div></div>
-<div class=card><b>Puntos disponibles</b><br><small>Toca «Ir aquí» para volver a uno exacto.</small><div id=lista></div></div>
+<div class=card><b>Puntos disponibles</b><br><small>«Ir aquí» restaura y reinicia al instante, sin preguntar.</small><div id=lista></div></div>
 <button id=crear>Crear punto de restauración ahora</button><div id=msg></div>
 <script>
 const H={"X-Requested-With":"retroceder","Content-Type":"application/json"},$=i=>document.getElementById(i);let tmp=null,hz=null;
@@ -427,7 +428,13 @@ async function cargar(){const d=await api("/api/estado?horas="+hrs());if(d.error
  tmp=d.temporizador;pintar()}
 function pintar(){$("canc").hidden=!tmp;if(!tmp){$("cuenta").textContent="";return}
  const s=Math.max(0,tmp-Math.floor(Date.now()/1000));$("cuenta").textContent=`Restaura en ${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`}
-async function ejecutar(b){if(!confirm("¿Restaurar la PC? Se reiniciará."))return;$("msg").textContent="Restaurando…";const r=await api("/api/ejecutar","POST",b);$("msg").textContent=r.msg||r.error||""}
+async function ejecutar(b){const r=await api("/api/ejecutar","POST",b);
+ if(r.error){$("msg").textContent=r.error;return}
+ reiniciando(r.msg)}
+function reiniciando(msg){const o=$("ov");o.hidden=false;$("ovt").textContent="🔄 PC reiniciando…";$("ovs").textContent=msg||"";
+ let caido=false;const t=setInterval(async()=>{try{const c=new AbortController();setTimeout(()=>c.abort(),3000);
+  const r=await fetch("/api/estado",{signal:c.signal,headers:H});if(caido&&r.ok){clearInterval(t);$("ovt").textContent="✅ PC en línea de nuevo";
+  $("ovs").textContent="Restauración completada.";setTimeout(()=>{o.hidden=true;cargar()},2500)}}catch{caido=true;$("ovt").textContent="🔄 PC reiniciando…";$("ovs").textContent="Restaurando y reiniciando. Esta pantalla avisa cuando vuelva."}},3000)}
 setInterval(pintar,1000);setInterval(cargar,5000);$("horas").oninput=()=>{clearTimeout(hz);hz=setTimeout(cargar,400)};
 $("ahora").onclick=()=>ejecutar({horas:hrs()});
 $("lista").onclick=e=>{const n=e.target.dataset.n;if(n)ejecutar({numero:+n})};
