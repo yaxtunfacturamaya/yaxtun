@@ -1,0 +1,29 @@
+# Escritorio remoto por URL (HTTPS + Tailscale)
+
+Ve y controla tu escritorio (mouse, clics, teclado, scroll) desde cualquier navegador
+dentro de tu tailnet, solo por HTTPS.
+
+## En la PC que quieres controlar
+```
+pip install -r requirements.txt
+# Windows (PowerShell):  $env:RD_PASSWORD="una-clave-larga"
+export RD_PASSWORD="una-clave-larga"
+export RD_ALLOWED_LOGIN="yaxtunfacturamaya.com.mx@hotmail.com"   # opcional: solo tu cuenta Tailscale
+python server.py
+```
+En otra terminal, publica con HTTPS (certificado automático de Tailscale):
+```
+tailscale serve --bg https / http://127.0.0.1:8765
+```
+Abre `https://<tu-pc>.<tu-tailnet>.ts.net/` desde cualquier dispositivo de tu tailnet, ingresa la contraseña y listo.
+(Activa HTTPS en la consola de Tailscale → DNS → "Enable HTTPS" si no lo está.)
+
+## Seguridad
+- El servidor solo escucha en 127.0.0.1; la única entrada es `tailscale serve` (no `funnel`, así no es público).
+- Contraseña + cookie firmada (Secure, HttpOnly), límite de intentos, y filtro opcional por cuenta de Tailscale.
+- Quien entre controla tu PC: usa contraseña larga.
+
+## Notas
+- Muestra el monitor principal. Ajustes: `RD_FPS`, `RD_QUALITY`, `RD_MAX_WIDTH`.
+- En Linux requiere X11 (no Wayland). En macOS da permisos de grabación de pantalla y accesibilidad a la terminal.
+- No funciona en pantalla de bloqueo/UAC de Windows (limitación de procesos de usuario).

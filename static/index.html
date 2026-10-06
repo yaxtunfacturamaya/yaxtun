@@ -1,0 +1,28 @@
+<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Escritorio remoto</title>
+<style>body{margin:0;background:#000;overflow:hidden}#s{width:100vw;height:100vh;object-fit:contain;display:block;cursor:crosshair;user-select:none}
+#bar{position:fixed;top:6px;right:6px;display:flex;gap:6px}#bar *{opacity:.7;font-size:14px;padding:6px}</style>
+<img id="s" draggable="false" alt="">
+<div id="bar"><input id="t" placeholder="Escribir texto…"><button id="send">Enviar</button><button id="fs">⛶</button></div>
+<script>
+const img=document.getElementById("s");
+const ws=new WebSocket(`wss://${location.host}/ws`);ws.binaryType="blob";
+const send=o=>ws.readyState===1&&ws.send(JSON.stringify(o));
+let last;ws.onmessage=e=>{const u=URL.createObjectURL(e.data);img.src=u;if(last)URL.revokeObjectURL(last);last=u};
+ws.onclose=()=>document.title="Desconectado";
+// Calcula coords normalizadas dentro del área real de la imagen (object-fit: contain)
+function pos(e){const r=img.getBoundingClientRect(),w=img.naturalWidth||1,h=img.naturalHeight||1;
+ const sc=Math.min(r.width/w,r.height/h),dw=w*sc,dh=h*sc,ox=r.left+(r.width-dw)/2,oy=r.top+(r.height-dh)/2;
+ return{x:Math.min(1,Math.max(0,(e.clientX-ox)/dw)),y:Math.min(1,Math.max(0,(e.clientY-oy)/dh))}}
+let mv=0;img.addEventListener("pointermove",e=>{const n=performance.now();if(n-mv<30)return;mv=n;send({t:"move",...pos(e)})});
+img.addEventListener("pointerdown",e=>{img.setPointerCapture(e.pointerId);send({t:"down",b:e.button,...pos(e)})});
+img.addEventListener("pointerup",e=>send({t:"up",b:e.button,...pos(e)}));
+img.addEventListener("dblclick",e=>{/* los down/up ya llegaron; el SO detecta el doble clic */});
+img.addEventListener("contextmenu",e=>e.preventDefault());
+img.addEventListener("wheel",e=>{e.preventDefault();send({t:"scroll",dy:e.deltaY,...pos(e)})},{passive:false});
+addEventListener("keydown",e=>{if(e.target.id==="t")return;e.preventDefault();send({t:"kdown",k:e.key})});
+addEventListener("keyup",e=>{if(e.target.id==="t")return;e.preventDefault();send({t:"kup",k:e.key})});
+send_=()=>{send({t:"text",s:t.value});t.value=""};
+document.getElementById("send").onclick=send_;t.onkeydown=e=>{if(e.key==="Enter")send_()};
+document.getElementById("fs").onclick=()=>document.documentElement.requestFullscreen();
+</script>

@@ -1,0 +1,9 @@
+<!doctype html><html lang="es"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Escritorio remoto</title>
+<body style="font-family:sans-serif;background:#111;color:#eee;display:grid;place-items:center;height:100vh;margin:0">
+<form method="post" action="/login" style="display:grid;gap:12px;width:280px">
+<h2>Escritorio remoto</h2>
+<input type="password" name="password" placeholder="Contraseña" autofocus style="padding:10px;font-size:16px">
+<button style="padding:10px;font-size:16px">Entrar</button>
+<small id="e" style="color:#f66"></small></form>
+<script>if(location.search.includes("error"))e.textContent="Contraseña incorrecta"</script>
