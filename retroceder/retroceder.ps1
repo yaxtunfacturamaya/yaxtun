@@ -11,7 +11,7 @@
    retroceder.ps1 -Accion Quitar   -> quita la tarea horaria
 #>
 param(
-    [ValidateSet('Menu','Retroceder','Listar','ListarJson','CrearPunto','Instalar','Quitar')]
+    [ValidateSet('Menu','Retroceder','Listar','CrearPunto','Instalar','Quitar')]
     [string]$Accion = 'Menu',
     [double]$Horas = 10,
     [switch]$Si
@@ -91,16 +91,6 @@ if (-not (Test-Admin)) { Write-Host 'Ejecuta como Administrador (usa retroceder.
 
 switch ($Accion) {
     'Listar'     { Show-Puntos }
-    'ListarJson' {
-        $obj = (Get-Date).AddHours(-$Horas)
-        $p = @(Get-Puntos)
-        $t = $p | Where-Object { $_.Fecha -le $obj } | Select-Object -Last 1
-        [pscustomobject]@{
-            ahora   = (Get-Date).ToString('s')
-            objetivo = if ($t) { $t.Numero } else { $null }
-            puntos  = @($p | ForEach-Object { @{ numero = $_.Numero; fecha = $_.Fecha.ToString('s'); descripcion = $_.Descripcion } })
-        } | ConvertTo-Json -Depth 4 -Compress
-    }
     'CrearPunto' { New-Punto }
     'Instalar'   { Install-Todo }
     'Quitar'     { Remove-Tarea }
