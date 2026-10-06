@@ -33,3 +33,8 @@ Abre `https://<tu-pc>.<tu-tailnet>.ts.net:8443/` (puerto 8443 para no chocar con
 - Muestra el monitor principal. Ajustes: `RD_FPS`, `RD_QUALITY`, `RD_MAX_WIDTH`.
 - En Linux requiere X11 (no Wayland). En macOS da permisos de grabación de pantalla y accesibilidad a la terminal.
 - No funciona en pantalla de bloqueo/UAC de Windows (limitación de procesos de usuario).
+
+## Retroceder la PC desde el Android
+Con el servidor corriendo **como Administrador** en Windows, abre `https://<tu-pc>.<tu-tailnet>.ts.net:8443/retroceder` en el Android
+(Chrome → ⋮ → «Instalar app»). Desde ahí: restaurar a hace 10 h (`RD_RESTORE_HOURS` para cambiarlo), temporizador que restaura solo,
+crear un punto ahora e «Instalar» (un punto de restauración cada hora). Detalles en `retroceder/README.md`.

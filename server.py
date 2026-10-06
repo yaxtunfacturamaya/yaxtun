@@ -97,6 +97,91 @@ async def login(request: web.Request):
     raise web.HTTPFound("/login?error=1")
 
 
+PS1 = BASE / "retroceder" / "retroceder.ps1"
+RESTORE_HOURS = float(os.environ.get("RD_RESTORE_HOURS", "10"))
+_timer: dict = {"task": None, "at": None}
+
+
+async def run_ps(accion: str, *extra: str):
+    if sys.platform != "win32":
+        raise web.HTTPNotImplemented(text="Retroceder solo funciona en Windows")
+    proc = await asyncio.create_subprocess_exec(
+        "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", str(PS1),
+        "-Accion", accion, "-Horas", str(RESTORE_HOURS), *extra,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+    out, _ = await proc.communicate()
+    return proc.returncode, out.decode("utf-8", "replace").strip()
+
+
+def need_xhr(request: web.Request):
+    # Cabecera custom: un sitio ajeno no puede enviarla sin preflight (anti-CSRF).
+    if request.headers.get("X-Requested-With") != "retroceder":
+        raise web.HTTPForbidden(text="Falta X-Requested-With")
+
+
+async def ret_page(request):
+    return web.FileResponse(STATIC / "retroceder.html")
+
+
+async def ret_static(request):
+    name = request.match_info["name"]
+    if name not in ("manifest.json", "sw.js", "icon.svg"):
+        raise web.HTTPNotFound()
+    resp = web.FileResponse(STATIC / name)
+    if name == "sw.js":
+        resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
+
+
+async def ret_estado(request):
+    code, out = await run_ps("ListarJson")
+    if code != 0:
+        return web.json_response({"error": out or "Error (¿el servidor corre como Administrador?)"}, status=500)
+    data = json.loads(out)
+    data["horas"] = RESTORE_HOURS
+    data["temporizador"] = _timer["at"]
+    return web.json_response(data)
+
+
+async def ret_crear(request):
+    need_xhr(request)
+    code, out = await run_ps("CrearPunto")
+    return web.json_response({"ok": code == 0, "msg": out}, status=200 if code == 0 else 500)
+
+
+async def ret_instalar(request):
+    need_xhr(request)
+    code, out = await run_ps("Instalar")
+    return web.json_response({"ok": code == 0, "msg": out}, status=200 if code == 0 else 500)
+
+
+async def ret_ejecutar(request):
+    need_xhr(request)
+    code, out = await run_ps("Retroceder", "-Si")
+    return web.json_response({"ok": code == 0, "msg": out}, status=200 if code == 0 else 500)
+
+
+async def _fire(minutos: float):
+    await asyncio.sleep(minutos * 60)
+    _timer["task"] = _timer["at"] = None
+    await run_ps("Retroceder", "-Si")
+
+
+async def ret_temporizador(request):
+    need_xhr(request)
+    if _timer["task"]:
+        _timer["task"].cancel()
+        _timer["task"] = _timer["at"] = None
+    if request.method == "DELETE":
+        return web.json_response({"ok": True, "temporizador": None})
+    minutos = float((await request.json()).get("minutos", 0))
+    if not 1 <= minutos <= 24 * 60:
+        raise web.HTTPBadRequest(text="minutos entre 1 y 1440")
+    _timer["at"] = int(time.time() + minutos * 60)
+    _timer["task"] = asyncio.create_task(_fire(minutos))
+    return web.json_response({"ok": True, "temporizador": _timer["at"]})
+
+
 async def index(request):
     return web.FileResponse(STATIC / "index.html")
 
@@ -201,6 +286,10 @@ def main():
     app.add_routes([
         web.get("/", index), web.get("/ws", ws_handler),
         web.route("*", "/login", login),
+        web.get("/retroceder", ret_page), web.get("/retroceder/{name}", ret_static),
+        web.get("/api/retroceder", ret_estado), web.post("/api/retroceder/crear", ret_crear),
+        web.post("/api/retroceder/instalar", ret_instalar), web.post("/api/retroceder/ejecutar", ret_ejecutar),
+        web.route("*", "/api/retroceder/temporizador", ret_temporizador),
     ])
     web.run_app(app, host=HOST, port=PORT, print=None)
 
