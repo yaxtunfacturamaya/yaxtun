@@ -24,7 +24,7 @@ pyautogui.PAUSE = 0
 
 HOST = os.environ.get("RD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RD_PORT", "8765"))
-PASSWORD = os.environ.get("RD_PASSWORD", "")  # si falta, main() la genera y la guarda
+PASSWORD = os.environ.get("RD_PASSWORD", "")  # opcional; vacía = entra solo con tu identidad de Tailscale
 # Opcional: solo esta cuenta de Tailscale (ej. tu@hotmail.com). `tailscale serve` inyecta el header.
 ALLOWED_LOGIN = os.environ.get("RD_ALLOWED_LOGIN", "").lower()
 FPS = int(os.environ.get("RD_FPS", "12"))
@@ -33,7 +33,6 @@ MAX_WIDTH = int(os.environ.get("RD_MAX_WIDTH", "1600"))
 SECRET = secrets.token_bytes(32)
 BASE = Path(getattr(sys, "_MEIPASS", Path(__file__).parent))  # _MEIPASS: ejecutable PyInstaller
 STATIC = BASE / "static"
-CONFIG = Path.home() / ".yaxtun-remote.json"
 
 
 def make_token() -> str:
@@ -52,15 +51,20 @@ def valid_token(tok: str | None) -> bool:
 
 
 def tailnet_ok(request: web.Request) -> bool:
-    if not ALLOWED_LOGIN:
-        return True
-    return request.headers.get("Tailscale-User-Login", "").lower() == ALLOWED_LOGIN
+    # `tailscale serve` inyecta este header solo para usuarios autenticados del tailnet;
+    # exigirlo evita que un proceso local o un acceso directo al puerto entre sin pasar por Tailscale.
+    login = request.headers.get("Tailscale-User-Login", "").lower()
+    if not login:
+        return False
+    return not ALLOWED_LOGIN or login == ALLOWED_LOGIN
 
 
 @web.middleware
 async def guard(request, handler):
     if not tailnet_ok(request):
         raise web.HTTPForbidden(text="Cuenta de Tailscale no permitida")
+    if not PASSWORD:
+        return await handler(request)
     if request.path in ("/login", "/login.html") or request.path.startswith("/static/login"):
         return await handler(request)
     if not valid_token(request.cookies.get("rd")):
@@ -167,22 +171,6 @@ async def ws_handler(request: web.Request):
     return ws
 
 
-def load_password() -> str:
-    """Contraseña de RD_PASSWORD, o la guardada, o una nueva aleatoria."""
-    if PASSWORD:
-        return PASSWORD
-    try:
-        return json.loads(CONFIG.read_text())["password"]
-    except (OSError, KeyError, ValueError):
-        pw = secrets.token_urlsafe(12)
-        CONFIG.write_text(json.dumps({"password": pw}))
-        try:
-            CONFIG.chmod(0o600)
-        except OSError:
-            pass
-        return pw
-
-
 def publish() -> None:
     """Publica con HTTPS en el tailnet vía `tailscale serve` y muestra la URL."""
     import shutil
@@ -199,11 +187,8 @@ def publish() -> None:
 
 
 def main():
-    global PASSWORD
-    PASSWORD = load_password()
-    if len(PASSWORD) < 8:
-        sys.exit("RD_PASSWORD debe tener mínimo 8 caracteres.")
-    print(f"\n*** Contraseña de acceso: {PASSWORD} ***\n")
+    if PASSWORD and len(PASSWORD) < 8:
+        sys.exit("RD_PASSWORD debe tener mínimo 8 caracteres (o déjala vacía para entrar sin contraseña).")
     publish()
     app = web.Application(middlewares=[guard])
     app.add_routes([

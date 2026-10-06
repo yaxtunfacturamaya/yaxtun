@@ -5,14 +5,14 @@ dentro de tu tailnet, solo por HTTPS.
 
 ## Ejecutable (sin Python)
 En GitHub → Actions → "Build ejecutables" descarga `escritorio-remoto-windows-latest` (.exe).
-Ábrelo en tu PC: genera y muestra una contraseña (se guarda en `~/.yaxtun-remote.json`) y
+Ábrelo en tu PC: entra sin contraseña (la autenticación es tu cuenta de Tailscale) y
 publica solo la URL HTTPS con `tailscale serve`. Solo necesitas Tailscale instalado.
 
 ## Con Python (alternativa)
 ```
 pip install -r requirements.txt
 # Windows (PowerShell):  $env:RD_PASSWORD="una-clave-larga"
-export RD_PASSWORD="una-clave-larga"
+# export RD_PASSWORD="una-clave-larga"   # opcional; sin ella entras solo con tu cuenta de Tailscale
 export RD_ALLOWED_LOGIN="yaxtunfacturamaya.com.mx@hotmail.com"   # opcional: solo tu cuenta Tailscale
 python server.py
 ```
@@ -25,7 +25,8 @@ Abre `https://<tu-pc>.<tu-tailnet>.ts.net/` desde cualquier dispositivo de tu ta
 
 ## Seguridad
 - El servidor solo escucha en 127.0.0.1; la única entrada es `tailscale serve` (no `funnel`, así no es público).
-- Contraseña + cookie firmada (Secure, HttpOnly), límite de intentos, y filtro opcional por cuenta de Tailscale.
+- Sin contraseña por defecto: solo entran dispositivos/usuarios de tu tailnet (header de identidad de Tailscale obligatorio). Si defines `RD_PASSWORD`, se pide además.
+- Con contraseña: cookie firmada (Secure, HttpOnly), límite de intentos, y filtro opcional por cuenta de Tailscale.
 - Quien entre controla tu PC: usa contraseña larga.
 
 ## Notas
