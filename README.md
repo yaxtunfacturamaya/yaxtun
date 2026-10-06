@@ -18,9 +18,9 @@ python server.py
 ```
 En otra terminal, publica con HTTPS (certificado automático de Tailscale):
 ```
-tailscale serve --bg https / http://127.0.0.1:8765
+tailscale serve --bg --https=8443 http://127.0.0.1:8765
 ```
-Abre `https://<tu-pc>.<tu-tailnet>.ts.net/` desde cualquier dispositivo de tu tailnet, ingresa la contraseña y listo.
+Abre `https://<tu-pc>.<tu-tailnet>.ts.net:8443/` (puerto 8443 para no chocar con otro servicio en el 443; cámbialo con `RD_HTTPS_PORT`) desde cualquier dispositivo de tu tailnet, ingresa la contraseña y listo.
 (Activa HTTPS en la consola de Tailscale → DNS → "Enable HTTPS" si no lo está.)
 
 ## Seguridad

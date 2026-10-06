@@ -24,6 +24,8 @@ pyautogui.PAUSE = 0
 
 HOST = os.environ.get("RD_HOST", "127.0.0.1")
 PORT = int(os.environ.get("RD_PORT", "8765"))
+# Puerto HTTPS de Tailscale. 8443 por defecto para no chocar con otro servicio que ya use el 443.
+HTTPS_PORT = int(os.environ.get("RD_HTTPS_PORT", "8443"))
 PASSWORD = os.environ.get("RD_PASSWORD", "")  # opcional; vacía = entra solo con tu identidad de Tailscale
 # Opcional: solo esta cuenta de Tailscale (ej. tu@hotmail.com). `tailscale serve` inyecta el header.
 ALLOWED_LOGIN = os.environ.get("RD_ALLOWED_LOGIN", "").lower()
@@ -181,9 +183,14 @@ def publish() -> None:
     if not ts:
         print("No encontré Tailscale; instálalo y ejecuta: tailscale serve --bg https / http://127.0.0.1:%d" % PORT)
         return
-    r = subprocess.run([ts, "serve", "--bg", "--https=443", f"http://127.0.0.1:{PORT}"],
+    r = subprocess.run([ts, "serve", "--bg", f"--https={HTTPS_PORT}", f"http://127.0.0.1:{PORT}"],
                        capture_output=True, text=True)
     print((r.stdout + r.stderr).strip())
+    try:
+        name = json.loads(subprocess.run([ts, "status", "--json"], capture_output=True, text=True).stdout)["Self"]["DNSName"].rstrip(".")
+        print(f"\n>>> Abre: https://{name}:{HTTPS_PORT}/\n")
+    except Exception:
+        print(f"\n>>> Abre: https://<tu-pc>.<tu-tailnet>.ts.net:{HTTPS_PORT}/\n")
 
 
 def main():
