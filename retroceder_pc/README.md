@@ -22,3 +22,10 @@ Quitar inicio automático/firewall: `RetrocederPC.exe --desinstalar`. Variables:
 HTTPS (TLS 1.2+), contraseña aleatoria en `C:\ProgramData\RetrocederPC\config.json`, límite de intentos, cookie Secure/HttpOnly, solo responde a IPs de red local.
 La clave de la autoridad (`ca.key`) vive solo en la PC; no la compartas. Si cambia la IP de la PC, el certificado se renueva solo (la autoridad ya instalada sigue valiendo).
 No abras estos puertos en el router.
+
+## Comparativa en pantalla dividida
+Cada hora, junto con el punto de restauración, el programa guarda una **foto del estado de la PC** (programas, actualizaciones, controladores,
+servicios, tareas, inicio con Windows, firewall y ajustes) y una **captura de pantalla**. En el panel, izquierda = tu PC en vivo,
+derecha = cómo estaba en ese punto, y debajo la lista de diferencias (se quitará / se volverá a poner / cambiará). Cada diferencia dice si
+Restaurar sistema **la revierte** o no: devuelve el sistema, programas, controladores y servicios; **no** revierte la configuración de tu usuario
+(tema, fondo, proxy…) ni tus archivos, y esos se muestran solo como informativos. Los puntos que creó Windows (no este programa) no tienen foto.

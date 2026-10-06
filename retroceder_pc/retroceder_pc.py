@@ -42,8 +42,10 @@ _fails: dict[str, list[float]] = {}
 def ps(cmd: str) -> tuple[int, str]:
     if FAKE:
         return fake(cmd)
-    r = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", cmd],
-                       capture_output=True, text=True, creationflags=0x08000000 if IS_WIN else 0)
+    r = subprocess.run(["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command",
+                        "[Console]::OutputEncoding=[Text.Encoding]::UTF8; " + cmd],
+                       capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=300,
+                       creationflags=0x08000000 if IS_WIN else 0)
     return r.returncode, (r.stdout + r.stderr).strip()
 
 
@@ -100,6 +102,7 @@ def create_point() -> str:
                    "-RestorePointType MODIFY_SETTINGS")
     if code != 0:
         raise RuntimeError(out)
+    threading.Thread(target=save_snapshot, daemon=True).start()
     return "Punto de restauración creado"
 
 
@@ -144,8 +147,197 @@ def uninstall_system():
     subprocess.run(["netsh", "advfirewall", "firewall", "delete", "rule", f"name={TASK}"], capture_output=True)
 
 
+# ---------- fotos del estado de la PC (para la comparativa) ----------
+SNAPS = CONF_DIR / "snaps"
+# categoría: (nombre, ¿lo revierte Restaurar sistema?). Restaurar sistema devuelve el sistema (HKLM),
+# programas, controladores y servicios; NO la configuración de tu usuario (tema, fondo, proxy...) ni tus archivos.
+CATS = {
+    "programas": ("Programas instalados", True), "actualizaciones": ("Actualizaciones de Windows", True),
+    "controladores": ("Controladores", True), "servicios": ("Servicios (tipo de inicio)", True),
+    "tareas": ("Tareas programadas", True), "inicio_sistema": ("Inicio con Windows (sistema)", True),
+    "firewall": ("Firewall", True), "sistema": ("Ajustes del sistema", True),
+    "programas_usuario": ("Programas de usuario", False), "inicio_usuario": ("Inicio con Windows (tu usuario)", False),
+    "apariencia": ("Apariencia y navegador (tu usuario)", False),
+}
+SNAP_PS = r"""
+$ErrorActionPreference='SilentlyContinue'
+$o=@{}
+$u=@{}
+foreach($p in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'){Get-ItemProperty $p|?{$_.DisplayName -and -not $_.SystemComponent}|%{$u[$_.DisplayName]="$($_.DisplayVersion)"}}
+$o.programas=$u
+$u=@{};Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'|?{$_.DisplayName}|%{$u[$_.DisplayName]="$($_.DisplayVersion)"};$o.programas_usuario=$u
+$u=@{};Get-HotFix|%{$u[$_.HotFixID]="$($_.InstalledOn)"};$o.actualizaciones=$u
+$u=@{};Get-CimInstance Win32_PnPSignedDriver|?{$_.DeviceName}|%{$u[$_.DeviceName]="$($_.DriverVersion)"};$o.controladores=$u
+$u=@{};Get-CimInstance Win32_Service|%{$u[$_.Name]="$($_.StartMode)"};$o.servicios=$u
+$u=@{};Get-ScheduledTask|%{$u[$_.TaskPath+$_.TaskName]=$(if($_.State -eq 'Disabled'){'Desactivada'}else{'Activa'})};$o.tareas=$u
+$u=@{};foreach($p in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run','HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'){$k=Get-Item $p;if($k){foreach($n in $k.GetValueNames()){$u[$n]=[string]$k.GetValue($n)}}};$o.inicio_sistema=$u
+$u=@{};$k=Get-Item 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Run';if($k){foreach($n in $k.GetValueNames()){$u[$n]=[string]$k.GetValue($n)}};$o.inicio_usuario=$u
+$u=@{};Get-NetFirewallProfile|%{$u[[string]$_.Name]=$(if($_.Enabled){'Activado'}else{'Desactivado'})};$o.firewall=$u
+$u=@{};$u['Plan de energía']=((powercfg /getactivescheme) -join ' ') -replace '^.*:\s*','';$u['Zona horaria']=(Get-TimeZone).Id;$u['Nombre del equipo']=$env:COMPUTERNAME;$u['PATH del sistema']=[Environment]::GetEnvironmentVariable('Path','Machine');$o.sistema=$u
+$u=@{};$c='HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Themes\Personalize'
+$u['Tema de apps']=$(if((Get-ItemProperty $c).AppsUseLightTheme -eq 0){'Oscuro'}else{'Claro'})
+$u['Tema del sistema']=$(if((Get-ItemProperty $c).SystemUsesLightTheme -eq 0){'Oscuro'}else{'Claro'})
+$u['Fondo de pantalla']=[string](Get-ItemProperty 'HKCU:\Control Panel\Desktop').WallPaper
+$i=Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Internet Settings'
+$u['Proxy']=$(if($i.ProxyEnable -eq 1){[string]$i.ProxyServer}else{'Sin proxy'})
+$u['Navegador predeterminado']=[string](Get-ItemProperty 'HKCU:\SOFTWARE\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice').ProgId
+$v=Get-CimInstance Win32_VideoController|Select-Object -First 1;$u['Resolución']="$($v.CurrentHorizontalResolution)x$($v.CurrentVerticalResolution)"
+$o.apariencia=$u
+ConvertTo-Json -InputObject $o -Depth 3 -Compress
+"""
+
+
+def take_snapshot() -> dict:
+    if FAKE:
+        d = {"programas": {"Chrome": "126", "7-Zip": "23"}, "servicios": {"Spooler": "Auto"},
+             "apariencia": {"Tema de apps": "Claro", "Fondo de pantalla": "C:/fondo1.jpg"}}
+        if (CONF_DIR / "fake_changed").exists():
+            d["programas"]["Zoom"] = "6.0"
+            d["programas"].pop("7-Zip")
+            d["servicios"]["Spooler"] = "Disabled"
+            d["apariencia"]["Tema de apps"] = "Oscuro"
+        return d
+    code, out = ps(SNAP_PS)
+    if code != 0 or not out.startswith("{"):
+        raise RuntimeError(out or "No se pudo leer el estado de la PC")
+    return json.loads(out)
+
+
+def _png(w, h, rgb) -> bytes:
+    def chunk(t, d):
+        return struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    rows = b"".join(b"\0" + bytes(rgb[y * w * 3:(y + 1) * w * 3]) for y in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(rows, 3)) + chunk(b"IEND", b""))
+
+
+def grab_screen_png(max_w=640) -> bytes:
+    """Captura de pantalla reducida, solo con ctypes/GDI (sin librerías)."""
+    if FAKE or not IS_WIN:
+        return make_icon(192)
+    from ctypes import wintypes as wt
+    u, g = ctypes.windll.user32, ctypes.windll.gdi32
+    vp = ctypes.c_void_p
+    u.GetDC.restype = vp; u.GetDC.argtypes = [vp]; u.ReleaseDC.argtypes = [vp, vp]
+    g.CreateCompatibleDC.restype = vp; g.CreateCompatibleDC.argtypes = [vp]
+    g.CreateCompatibleBitmap.restype = vp; g.CreateCompatibleBitmap.argtypes = [vp, ctypes.c_int, ctypes.c_int]
+    g.SelectObject.restype = vp; g.SelectObject.argtypes = [vp, vp]
+    g.StretchBlt.argtypes = [vp, ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, vp,
+                             ctypes.c_int, ctypes.c_int, ctypes.c_int, ctypes.c_int, wt.DWORD]
+    g.GetDIBits.argtypes = [vp, vp, wt.UINT, wt.UINT, vp, vp, wt.UINT]
+    g.DeleteObject.argtypes = [vp]; g.DeleteDC.argtypes = [vp]; g.SetStretchBltMode.argtypes = [vp, ctypes.c_int]
+
+    class BIH(ctypes.Structure):
+        _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD),
+                    ("biBitCount", wt.WORD), ("biCompression", wt.DWORD), ("biSizeImage", wt.DWORD),
+                    ("x", wt.LONG), ("y", wt.LONG), ("biClrUsed", wt.DWORD), ("biClrImportant", wt.DWORD)]
+    u.SetProcessDPIAware()
+    w, h = u.GetSystemMetrics(0), u.GetSystemMetrics(1)
+    tw = min(max_w, w)
+    th = max(1, int(h * tw / w))
+    hdc = u.GetDC(None)
+    mdc = g.CreateCompatibleDC(hdc)
+    bmp = g.CreateCompatibleBitmap(hdc, tw, th)
+    old = g.SelectObject(mdc, bmp)
+    g.SetStretchBltMode(mdc, 4)  # HALFTONE: reducción suave
+    g.StretchBlt(mdc, 0, 0, tw, th, hdc, 0, 0, w, h, 0x00CC0020)
+    bih = BIH(ctypes.sizeof(BIH), tw, -th, 1, 32, 0, 0, 0, 0, 0, 0)
+    buf = ctypes.create_string_buffer(tw * th * 4)
+    g.GetDIBits(mdc, bmp, 0, th, buf, ctypes.byref(bih), 0)
+    g.SelectObject(mdc, old); g.DeleteObject(bmp); g.DeleteDC(mdc); u.ReleaseDC(None, hdc)
+    raw = buf.raw
+    rgb = bytearray(tw * th * 3)
+    rgb[0::3], rgb[1::3], rgb[2::3] = raw[2::4], raw[1::4], raw[0::4]
+    return _png(tw, th, rgb)
+
+
+def save_snapshot(t=None):
+    try:
+        SNAPS.mkdir(parents=True, exist_ok=True)
+        t = int(t or time.time())
+        datos = take_snapshot()
+        (SNAPS / f"{t}.json").write_text(json.dumps(datos))
+        (SNAPS / f"{t}.png").write_bytes(grab_screen_png())
+        for old in sorted(SNAPS.glob("*.json"))[:-72]:  # ~3 días
+            old.unlink(missing_ok=True)
+            old.with_suffix(".png").unlink(missing_ok=True)
+    except Exception as e:
+        print("foto del estado falló:", e)
+
+
+def snapshot_ids() -> list[int]:
+    return sorted(int(p.stem) for p in SNAPS.glob("*.json")) if SNAPS.exists() else []
+
+
+def point_epoch(p) -> float:
+    return time.mktime(time.strptime(p["fecha"], "%Y-%m-%dT%H:%M:%S"))
+
+
+def snapshot_for(p):
+    pe = point_epoch(p)
+    best = min(snapshot_ids(), key=lambda t: abs(t - pe), default=None)
+    return best if best is not None and abs(best - pe) <= 900 else None
+
+
+_live = {"t": 0.0, "datos": None, "busy": False}
+
+
+def _refresh_live():
+    try:
+        _live["datos"] = take_snapshot()
+        _live["t"] = time.time()
+    except Exception as e:
+        print("estado en vivo falló:", e)
+    finally:
+        _live["busy"] = False
+
+
+def live_state():
+    if time.time() - _live["t"] > 60 and not _live["busy"]:
+        _live["busy"] = True
+        threading.Thread(target=_refresh_live, daemon=True).start()
+    return _live["datos"]
+
+
+def diff_states(then: dict, now: dict) -> list[dict]:
+    out = []
+    for cat, (label, rev) in CATS.items():
+        a, b = now.get(cat) or {}, then.get(cat) or {}  # a = ahora, b = antes (a lo que volvería)
+        for k in sorted(set(a) | set(b)):
+            if k not in b:
+                tipo = "quitar"      # se instaló/creó después del punto: al restaurar desaparece
+            elif k not in a:
+                tipo = "volver"      # existía y ya no está: al restaurar vuelve
+            elif a[k] != b[k]:
+                tipo = "cambiar"
+            else:
+                continue
+            out.append({"cat": cat, "label": label, "revierte": rev, "item": k, "tipo": tipo,
+                        "ahora": str(a.get(k, ""))[:140], "antes": str(b.get(k, ""))[:140]})
+    return out
+
+
+def compare(hours=None, number=None) -> dict:
+    pts = list_points()
+    p = next((x for x in pts if x["numero"] == number), None) if number is not None else target_point(hours)
+    if not p:
+        return {"sin_punto": True}
+    sid = snapshot_for(p)
+    if sid is None:
+        return {"punto": p, "sin_datos": True}
+    live = live_state()
+    if live is None:
+        return {"punto": p, "snap": sid, "calculando": True}
+    then = json.loads((SNAPS / f"{sid}.json").read_text())
+    ch = diff_states(then, live)
+    return {"punto": p, "snap": sid, "cambios": ch[:300], "total": len(ch),
+            "revierten": sum(1 for c in ch if c["revierte"]), "actualizado": int(_live["t"])}
+
+
 # ---------- hilos internos (sin tareas externas) ----------
 def hourly_points():
+    if not snapshot_ids():
+        save_snapshot()
     while True:
         try:
             pts = list_points()
@@ -337,8 +529,27 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_body(200, (CONF_DIR / "ca.crt").read_bytes(), "application/x-x509-ca-cert")
         if not self.authed():
             return self.send_body(200, LOGIN.replace("%ERR%", "Contraseña incorrecta" if "error" in self.path else ""), "text/html")
+        if path.startswith("/api/captura/") and path.endswith(".png"):
+            name = path[len("/api/captura/"):-4]
+            try:
+                if name == "ahora":
+                    png = grab_screen_png()
+                elif name.isdigit():
+                    png = (SNAPS / f"{int(name)}.png").read_bytes()
+                else:
+                    raise FileNotFoundError
+                return self.send_body(200, png, "image/png")
+            except Exception:
+                return self.send_body(404, "no", "text/plain")
         if path == "/":
             return self.send_body(200, PAGE, "text/html")
+        if path == "/api/comparar":
+            q = parse_qs(self.path.partition("?")[2])
+            try:
+                num = int(q["numero"][0]) if "numero" in q else None
+                return self.send_body(200, json.dumps(compare(float(q.get("horas", [HOURS])[0]), num)))
+            except Exception as e:
+                return self.send_body(500, json.dumps({"error": str(e)}))
         if path == "/api/estado":
             try:
                 q = parse_qs(self.path.partition("?")[2])
@@ -405,11 +616,19 @@ h1{font-size:22px}button{width:100%;padding:16px;margin:8px 0;border:0;border-ra
 button.big{background:#dc2626;font-weight:700}button.ok{background:#0284c7}.card{background:#1e293b;border-radius:12px;padding:12px;margin:12px 0}
 small{color:#94a3b8}input{padding:12px;border-radius:8px;border:0;width:90px;font-size:16px}#msg{white-space:pre-wrap;color:#fbbf24}
 .pt{display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-top:1px solid #334155;font-size:14px}
-.pt button{width:auto;padding:8px 12px;margin:0;font-size:14px;background:#7f1d1d}#lista{max-height:240px;overflow:auto}</style></head><body>
+.pt button{width:auto;padding:8px 12px;margin:0;font-size:14px;background:#7f1d1d}#lista{max-height:240px;overflow:auto}
+.pt .vb{background:#334155;margin-left:6px}.split{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:8px}
+.split img{width:100%;border-radius:6px;background:#000;min-height:40px;display:block}.split small{display:block;margin-bottom:2px}
+.chg{border-top:1px solid #334155;padding:7px 0;font-size:13px}.cols{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-top:3px}
+.cols div{background:#0f172a;border-radius:6px;padding:4px 6px;word-break:break-word}.tag{font-size:11px;padding:2px 6px;border-radius:6px;margin-left:4px}
+.rv{background:#14532d}.nrv{background:#713f12}.cat{margin-top:10px;color:#38bdf8;font-weight:600}</style></head><body>
 <div id=ov hidden style="position:fixed;inset:0;background:#0f172af2;z-index:9;display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;padding:24px"><h1 id=ovt></h1><p id=ovs></p></div>
 <h1>⏪ Retroceder PC</h1>
 <div class=card><b>¿Cuánto retroceder?</b><br><input id=horas type=number value=10 min=0.5 step=0.5> horas atrás
 <div id=estado style="margin-top:8px">Cargando…</div></div>
+<div class=card><b>Comparativa en tiempo real</b> <small id=cmpinfo></small>
+<div class=split><div><small>AHORA (en vivo)</small><img id=imgA alt=""></div><div><small id=lblB>Antes</small><img id=imgB alt=""></div></div>
+<div id=resumen style="margin-top:8px"></div><div id=cambios></div></div>
 <button class=big id=ahora>Restaurar ahora</button>
 <div class=card><b>Temporizador</b><br><small>Restaura solo (con las horas de arriba) dentro de:</small><br>
 <input id=min type=number value=60 min=1> minutos<button class=ok id=prog>Iniciar temporizador</button>
@@ -424,8 +643,24 @@ async function api(u,m="GET",b){const r=await fetch(u,{method:m,headers:H,body:b
 async function cargar(){const d=await api("/api/estado?horas="+hrs());if(d.error){$("estado").textContent=d.error;return}
  const t=d.objetivo;
  $("estado").innerHTML=t?`Se restaurará al punto del <b>${t.fecha.replace("T"," ")}</b>`:`⚠ No hay un punto de hace ${hrs()} h todavía. El programa crea uno cada hora.`;
- $("lista").innerHTML=d.puntos.slice().reverse().map(p=>`<div class=pt><span>${p.fecha.replace("T"," ")}</span><button data-n=${p.numero}>Ir aquí</button></div>`).join("")||"Ninguno todavía";
+ $("lista").innerHTML=d.puntos.slice().reverse().map(p=>`<div class=pt><span>${p.fecha.replace("T"," ")}</span><span><button class=vb data-v=${p.numero}>Ver</button><button data-n=${p.numero}>Ir aquí</button></span></div>`).join("")||"Ninguno todavía";
  tmp=d.temporizador;pintar()}
+let sel=null,snapShown=null;
+const esc=t=>String(t).replace(/[&<>"]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const TIPO={quitar:"Se quitará",volver:"Se volverá a poner",cambiar:"Cambiará"};
+async function comparar(){const d=await api("/api/comparar?"+(sel?"numero="+sel:"horas="+hrs()));
+ const R=$("resumen"),C=$("cambios");
+ if(d.error){R.textContent=d.error;return}
+ if(d.sin_punto){R.textContent="Aún no hay un punto para comparar.";C.innerHTML="";$("imgB").removeAttribute("src");return}
+ $("lblB").textContent="Antes: "+d.punto.fecha.replace("T"," ");
+ if(d.sin_datos){R.textContent="Ese punto no tiene foto del estado (lo creó Windows u otro programa). Se puede restaurar igual, pero no hay comparativa.";C.innerHTML="";$("imgB").removeAttribute("src");return}
+ if(snapShown!==d.snap){snapShown=d.snap;$("imgB").src="/api/captura/"+d.snap+".png"}
+ if(d.calculando){R.textContent="Leyendo el estado actual de la PC…";return}
+ R.innerHTML=d.total?`<b>${d.total}</b> diferencias · <b>${d.revierten}</b> se revertirían al restaurar · ${d.total-d.revierten} no se revierten (solo informativas)`:"✅ Sin diferencias: la PC está igual que en ese punto.";
+ let h="",last="";for(const c of d.cambios){if(c.label!==last){last=c.label;h+=`<div class=cat>${esc(c.label)}</div>`}
+  h+=`<div class=chg><b>${esc(c.item)}</b><span class="tag ${c.revierte?"rv":"nrv"}">${c.revierte?"Se revierte":"No se revierte"}</span> <small>${TIPO[c.tipo]}</small>
+  <div class=cols><div><small>Ahora</small><br>${c.tipo=="volver"?"—":esc(c.ahora)||"—"}</div><div><small>Quedaría</small><br>${c.tipo=="quitar"?"— (no existe)":esc(c.antes)||"—"}</div></div></div>`}
+ C.innerHTML=h;$("cmpinfo").textContent="· actualizado "+new Date(d.actualizado*1000).toLocaleTimeString()}
 function pintar(){$("canc").hidden=!tmp;if(!tmp){$("cuenta").textContent="";return}
  const s=Math.max(0,tmp-Math.floor(Date.now()/1000));$("cuenta").textContent=`Restaura en ${Math.floor(s/60)}:${String(s%60).padStart(2,"0")}`}
 async function ejecutar(b){const r=await api("/api/ejecutar","POST",b);
@@ -435,14 +670,15 @@ function reiniciando(msg){const o=$("ov");o.hidden=false;$("ovt").textContent="�
  let caido=false;const t=setInterval(async()=>{try{const c=new AbortController();setTimeout(()=>c.abort(),3000);
   const r=await fetch("/api/estado",{signal:c.signal,headers:H});if(caido&&r.ok){clearInterval(t);$("ovt").textContent="✅ PC en línea de nuevo";
   $("ovs").textContent="Restauración completada.";setTimeout(()=>{o.hidden=true;cargar()},2500)}}catch{caido=true;$("ovt").textContent="🔄 PC reiniciando…";$("ovs").textContent="Restaurando y reiniciando. Esta pantalla avisa cuando vuelva."}},3000)}
-setInterval(pintar,1000);setInterval(cargar,5000);$("horas").oninput=()=>{clearTimeout(hz);hz=setTimeout(cargar,400)};
-$("ahora").onclick=()=>ejecutar({horas:hrs()});
-$("lista").onclick=e=>{const n=e.target.dataset.n;if(n)ejecutar({numero:+n})};
+setInterval(pintar,1000);setInterval(cargar,5000);$("horas").oninput=()=>{sel=null;clearTimeout(hz);hz=setTimeout(()=>{cargar();comparar()},400)};
+setInterval(()=>{if(!document.hidden)$("imgA").src="/api/captura/ahora.png?t="+Date.now()},2000);setInterval(()=>{if(!document.hidden)comparar()},8000);
+$("ahora").onclick=()=>ejecutar(sel?{numero:sel}:{horas:hrs()});
+$("lista").onclick=e=>{const n=e.target.dataset.n,v=e.target.dataset.v;if(n)ejecutar({numero:+n});if(v){sel=+v;$("msg").textContent="";comparar()}};
 $("prog").onclick=async()=>{const r=await api("/api/temporizador","POST",{minutos:+$("min").value,horas:hrs()});tmp=r.temporizador;pintar()};
 $("canc").onclick=async()=>{await api("/api/temporizador","POST",{minutos:0});tmp=null;pintar()};
 $("crear").onclick=async()=>{const r=await api("/api/crear","POST");$("msg").textContent=r.msg||r.error||"";cargar()};
 if("serviceWorker"in navigator)navigator.serviceWorker.register("/sw.js").catch(()=>{});
-cargar();</script></body></html>"""
+cargar();comparar();</script></body></html>"""
 
 INFO = """<!doctype html><html lang=es><meta charset=utf-8><meta name=viewport content="width=device-width,initial-scale=1">
 <title>Retroceder PC - instalar</title><body style="font:16px system-ui;background:#0f172a;color:#e2e8f0;padding:20px;max-width:460px;margin:auto">
@@ -487,6 +723,8 @@ def main():
     ip = lan_ip()
     cert, key, _ = ensure_certs(ip)
     Handler.conf = conf
+    if FAKE and not snapshot_ids():  # solo pruebas: foto del estado "de hace 11 h"
+        save_snapshot(point_epoch(_fake_points[0]) + 30)
     threading.Thread(target=hourly_points, daemon=True).start()
     try:
         srv = ThreadingHTTPServer(("0.0.0.0", PORT), Handler)
