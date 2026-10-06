@@ -1,19 +1,24 @@
-# Retroceder PC (nativo, sin servicios externos)
+# Retroceder PC (nativo, HTTPS propio, sin servicios externos)
 
-Un solo `.exe` para Windows. Sin Tailscale, sin cuentas, sin nada que instalar: solo la biblioteca estándar de Python.
+Un solo `.exe` para Windows. Sin Tailscale ni cuentas: genera su propia autoridad de certificados y sirve el panel por **HTTPS** en tu WiFi.
 
-**Qué hace al abrirlo** (pide Administrador solo): activa Restaurar sistema, abre el puerto 8780 en el firewall (solo redes privadas),
-se pone para iniciar con Windows y crea un punto de restauración **cada hora** por su cuenta.
+## Cómo funciona el retroceso
+Usa **Restaurar sistema** de Windows. El programa crea un *punto de restauración* cada hora (guarda ajustes, controladores,
+registro y programas instalados). Al pedir «retroceder 10 h» busca el punto más reciente de hace 10 h o más, crea antes un
+punto de seguridad (para poder deshacer) y le dice a Windows que restaure; la PC se reinicia y todo lo cambiado después vuelve a como estaba.
+No toca documentos ni archivos personales. Solo puede volver a puntos que ya existan (hay que esperar las horas la primera vez).
+En el panel eliges **cuántas horas atrás**, o tocas «Ir aquí» en un punto exacto, y puedes programar un **temporizador**.
 
-**Desde el Android** (mismo WiFi que la PC): abre la dirección y la contraseña que muestra la ventana
-(ej. `http://192.168.1.50:8780`). Botones: restaurar a hace 10 h, temporizador que restaura solo, crear punto ahora.
-Chrome → ⋮ → «Añadir a pantalla de inicio» para tener el icono.
+## Instalar (una sola vez)
+1. En la PC abre `RetrocederPC.exe` (pide Administrador). Se configura solo: Restaurar sistema, firewall (puertos 8780-8781, redes privadas), inicio con Windows.
+2. En el Android (mismo WiFi) abre `http://<ip-de-la-pc>:8781` (la ventana la muestra). Descarga el certificado e instálalo:
+   Ajustes → Seguridad → Más seguridad → Cifrado y credenciales → Instalar un certificado → Certificado de CA.
+3. Abre `https://<ip-de-la-pc>:8780`, escribe la contraseña y en Chrome ⋮ → **Instalar app**. Queda como app en tu pantalla de inicio.
 
-- Obtener el .exe: GitHub → Actions → «Build Retroceder PC» → artefacto `RetrocederPC-windows`.
-- O con Python: `python retroceder_pc/retroceder_pc.py` (Windows).
-- Quitar inicio automático y firewall: `RetrocederPC.exe --desinstalar`.
-- Variables: `RETRO_HORAS` (10), `RETRO_PUERTO` (8780).
+El .exe: GitHub → Actions → «Build Retroceder PC» → `RetrocederPC-windows`. Con Python: `pip install -r retroceder_pc/requirements.txt` y `python retroceder_pc/retroceder_pc.py`.
+Quitar inicio automático/firewall: `RetrocederPC.exe --desinstalar`. Variables: `RETRO_HORAS` (10), `RETRO_PUERTO` (8780).
 
-Seguridad: contraseña aleatoria (guardada en `C:\ProgramData\RetrocederPC\config.json`), límite de intentos, y solo responde a IPs de red local.
-Va por HTTP dentro de tu WiFi (sin cifrar); no abras el puerto en el router.
-No restaura archivos personales: devuelve ajustes, controladores y programas. Solo puede volver a puntos que existan: tras la primera vez hay que esperar 10 h.
+## Seguridad
+HTTPS (TLS 1.2+), contraseña aleatoria en `C:\ProgramData\RetrocederPC\config.json`, límite de intentos, cookie Secure/HttpOnly, solo responde a IPs de red local.
+La clave de la autoridad (`ca.key`) vive solo en la PC; no la compartas. Si cambia la IP de la PC, el certificado se renueva solo (la autoridad ya instalada sigue valiendo).
+No abras estos puertos en el router.
